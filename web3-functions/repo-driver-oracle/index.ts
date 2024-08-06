@@ -12,10 +12,10 @@ Web3Function.onRun(async (context: Web3FunctionEventContext) => {
   const ownerUpdateRequested = EventFragment.from(
     "OwnerUpdateRequested(uint256 indexed accountId, uint8 forge, bytes name, address payer)");
   const updateOwnerByGelato = FunctionFragment.from(
-    "updateOwnerByGelato(uint256 accountId, address owner, uint96 fromBlock, address payer)");
+    "updateOwnerByGelato(uint256 accountId, address owner, address payer)");
   const repoDriverInterface = new Interface([ownerUpdateRequested, updateOwnerByGelato]);
 
-  const {address: repoDriver, blockNumber: fromBlock} = context.log;
+  const repoDriver = context.log.address;
   const {accountId, forge, name, payer}  = repoDriverInterface.parseLog(context.log).args;
   const chain = {
     1:         "ethereum",
@@ -66,14 +66,14 @@ Web3Function.onRun(async (context: Web3FunctionEventContext) => {
       default:
         throw Error(`Unknown forge ${forge}`);
     }
-    const funding: any = await ky.get(url, { timeout: 25_000, retry: 10 }).json();
+    const funding: any = await ky.get(url, { timeout: 4_000 }).json();
     owner = getAddress(funding.drips[chain].ownedBy);
   } catch (error_) {
     error = error_;
   }
 
   const functionData = repoDriverInterface.encodeFunctionData(
-    updateOwnerByGelato, [accountId, owner, fromBlock, payer]);
+    updateOwnerByGelato, [accountId, owner, payer]);
   const functionCall = { to: repoDriver, data: functionData };
 
   console.log("Owner:", owner);
@@ -82,7 +82,6 @@ Web3Function.onRun(async (context: Web3FunctionEventContext) => {
   console.log("Repo name:", name);
   console.log("Repo name as UTF-8:", repoName);
   console.log("Payer:", payer);
-  console.log("Requested from block:", fromBlock);
   if(error) console.log("Error:", error)
 
   return { canExec: true, callData: [functionCall] };
