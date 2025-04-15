@@ -10,14 +10,19 @@ import ky from "ky";
 
 Web3Function.onRun(async (context: Web3FunctionEventContext) => {
   const ownerUpdateRequested = EventFragment.from(
-    "OwnerUpdateRequested(uint256 indexed accountId, uint8 forge, bytes name, address payer)");
+    "OwnerUpdateRequested(uint256 indexed accountId, uint8 forge, bytes nameBytes, address payer)");
   const updateOwnerByGelato = FunctionFragment.from(
     "updateOwnerByGelato(uint256 accountId, address owner, address payer)");
   const repoDriverInterface = new Interface([ownerUpdateRequested, updateOwnerByGelato]);
 
+  const forgeGitHub = 0;
+  const forgeGitLab = 1;
+  const forgeOrcid = 2;
+
   const repoDriver = context.log.address;
-  const {accountId, forge, name, payer}  = repoDriverInterface.parseLog(context.log).args;
+  const {accountId, forge, nameBytes, payer}  = repoDriverInterface.parseLog(context.log).args;
   const chain = {
+    31337:     "gelato-local-test",
     1:         "ethereum",
     11155111:  "sepolia",
     10:        "optimism",
@@ -48,41 +53,64 @@ Web3Function.onRun(async (context: Web3FunctionEventContext) => {
     59141:     "linea-sepolia",
     81457:     "blast",
     168587773: "blast-sepolia",
+    324:       "zksync",
+    300:       "zksync-sepolia",
+    534352:    "scroll",
+    534351:    "scroll-sepolia",
   }[context.gelatoArgs.chainId] ?? "other";
 
-  let owner = AddressZero;
-  let repoName = "<malformed UTF-8>";
+  let owner;
+  let name;
   let error;
   try {
-    repoName = toUtf8String(name);
-    let url: string;
-    switch(forge) {
-      case 0:
-        url = `https://raw.githubusercontent.com/${repoName}/HEAD/FUNDING.json`;
-        break;
-      case 1:
-        url = `https://gitlab.com/${repoName}/-/raw/HEAD/FUNDING.json`;
-        break;
-      default:
-        throw Error(`Unknown forge ${forge}`);
+    name = toUtf8String(nameBytes);
+    if(forge === forgeGitHub || forge === forgeGitLab) {
+      const url = (forge === forgeGitHub) ?
+        `https://raw.githubusercontent.com/${name}/HEAD/FUNDING.json` :
+        `https://gitlab.com/${name}/-/raw/HEAD/FUNDING.json`;
+      const afterResponseHook = async (_request, _options, response) => {
+        // Ensure that the entire body has been transferred and no network failure can occur.
+        await response.clone().arrayBuffer();
+        // Got a valid response, from now on any failure will be considered an ownership revocation.
+        if(response.ok || response.status === 403 || response.status === 404) owner = AddressZero;
+      }
+      const getOptions = {timeout: 4_000, hooks: {afterResponse: [afterResponseHook]}};
+      const json = await ky.get(url, getOptions).json();
+      owner = getAddress(json.drips[chain].ownedBy)
     }
-    const funding: any = await ky.get(url, { timeout: 4_000 }).json();
-    owner = getAddress(funding.drips[chain].ownedBy);
+    else if(forge == forgeOrcid){
+      const id = name.replace(/^sandbox-/, "");
+      const subdomain = id !== name ? ".sandbox" : "";
+      const url = `https://pub${subdomain}.orcid.org/v3.0/${id}/researcher-urls`;
+      const json = await ky.get(url, {timeout: 4_000}).json();
+      const owners = json["researcher-url"]
+        .filter((urlItem) => urlItem["url-name"] === "DRIPS_OWNERSHIP_CLAIM")
+        .map((urlItem) => urlItem.url?.value)
+        .filter((urlString) => URL.canParse(urlString))
+        .map((urlString) => new URL(urlString))
+        .filter((url) => url.href === `http://0.0.0.0/${url.search}`)
+        .flatMap((url) => url.searchParams.getAll(chain.replaceAll("-", "_")));
+      if(owners.length != 1) throw `Found ${owners.length} ownership declarations`;
+      owner = getAddress(owners[0]);
+    }
+    else {
+      throw Error(`Unknown forge ${forge}`);
+    }
   } catch (error_) {
     error = error_;
   }
 
-  const functionData = repoDriverInterface.encodeFunctionData(
-    updateOwnerByGelato, [accountId, owner, payer]);
-  const functionCall = { to: repoDriver, data: functionData };
-
-  console.log("Owner:", owner);
+  console.log("Forge:", forge);
+  console.log("Name:", name || "<malformed UTF-8>");
+  console.log("Name bytes:", nameBytes);
   console.log("Account ID:", accountId.toString());
-  console.log("Repo forge:", forge);
-  console.log("Repo name:", name);
-  console.log("Repo name as UTF-8:", repoName);
+  console.log("Owner:", owner || "<unchanged>");
   console.log("Payer:", payer);
   if(error) console.log("Error:", error)
 
+  if(!owner) return { canExec: false, message: "Owner unchanged" };
+  const functionData = repoDriverInterface.encodeFunctionData(
+    updateOwnerByGelato, [accountId, owner, payer]);
+  const functionCall = { to: repoDriver, data: functionData };
   return { canExec: true, callData: [functionCall] };
 });
