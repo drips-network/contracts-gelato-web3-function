@@ -18,6 +18,7 @@ Web3Function.onRun(async (context: Web3FunctionEventContext) => {
   const forgeGitHub = 0;
   const forgeGitLab = 1;
   const forgeOrcid = 2;
+  const forgeWebsite = 3;
 
   const repoDriver = context.log.address;
   const {accountId, forge, nameBytes, payer}  = repoDriverInterface.parseLog(context.log).args;
@@ -64,21 +65,7 @@ Web3Function.onRun(async (context: Web3FunctionEventContext) => {
   let error;
   try {
     name = toUtf8String(nameBytes);
-    if(forge === forgeGitHub || forge === forgeGitLab) {
-      const url = (forge === forgeGitHub) ?
-        `https://raw.githubusercontent.com/${name}/HEAD/FUNDING.json` :
-        `https://gitlab.com/${name}/-/raw/HEAD/FUNDING.json`;
-      const afterResponseHook = async (_request, _options, response) => {
-        // Ensure that the entire body has been transferred and no network failure can occur.
-        await response.clone().arrayBuffer();
-        // Got a valid response, from now on any failure will be considered an ownership revocation.
-        if(response.ok || response.status === 403 || response.status === 404) owner = AddressZero;
-      }
-      const getOptions = {timeout: 4_000, hooks: {afterResponse: [afterResponseHook]}};
-      const json = await ky.get(url, getOptions).json();
-      owner = getAddress(json.drips[chain].ownedBy)
-    }
-    else if(forge == forgeOrcid){
+    if(forge == forgeOrcid){
       const id = name.replace(/^sandbox-/, "");
       const subdomain = id !== name ? ".sandbox" : "";
       const url = `https://pub${subdomain}.orcid.org/v3.0/${id}/researcher-urls`;
@@ -94,7 +81,20 @@ Web3Function.onRun(async (context: Web3FunctionEventContext) => {
       owner = getAddress(owners[0]);
     }
     else {
-      throw Error(`Unknown forge ${forge}`);
+      let url;
+      if(forge === forgeGitHub) url = `https://raw.githubusercontent.com/${name}/HEAD/FUNDING.json`;
+      else if(forge === forgeGitLab) url = `https://gitlab.com/${name}/-/raw/HEAD/FUNDING.json`;
+      else if(forge === forgeWebsite) url = `https://${name}/FUNDING.json`;
+      else throw Error(`Unknown forge ${forge}`);
+      const afterResponseHook = async (_request, _options, response) => {
+        // Ensure that the entire body has been transferred and no network failure can occur.
+        await response.clone().arrayBuffer();
+        // Got a valid response, from now on any failure will be considered an ownership revocation.
+        if(response.ok || response.status === 403 || response.status === 404) owner = AddressZero;
+      }
+      const getOptions = {timeout: 4_000, hooks: {afterResponse: [afterResponseHook]}};
+      const json = await ky.get(url, getOptions).json();
+      owner = getAddress(json.drips[chain].ownedBy)
     }
   } catch (error_) {
     error = error_;
